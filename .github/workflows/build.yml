@@ -1,0 +1,69 @@
+name: Build Native Java APK
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile and Sign Pure Java APK
+        run: |
+          set -e
+          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -n 1)
+          PLATFORM=$(ls -d $ANDROID_HOME/platforms/android-* | sort -V | tail -n 1)
+          ANDROID_JAR="$PLATFORM/android.jar"
+
+          mkdir -p src/com/rikosoft/posbridge build/gen build/obj build/apk
+          cp BridgeApp.java src/com/rikosoft/posbridge/BridgeApp.java
+
+          # 1. Упаковка AndroidManifest.xml
+          "$BUILD_TOOLS/aapt2" link -o build/apk/unsigned.apk \
+            --manifest AndroidManifest.xml \
+            -I "$ANDROID_JAR" \
+            --java build/gen
+
+          # 2. Компиляция Java -> .class -> classes.dex
+          javac -encoding UTF-8 -source 1.8 -target 1.8 \
+            -bootclasspath "$ANDROID_JAR" \
+            -classpath "$ANDROID_JAR" \
+            -d build/obj \
+            src/com/rikosoft/posbridge/BridgeApp.java
+
+          "$BUILD_TOOLS/d8" build/obj/com/rikosoft/posbridge/*.class \
+            --lib "$ANDROID_JAR" \
+            --output build/apk/
+
+          # 3. Добавление classes.dex в APK и выравнивание
+          cd build/apk && zip -q -u unsigned.apk classes.dex && cd ../..
+          "$BUILD_TOOLS/zipalign" -f -p 4 build/apk/unsigned.apk build/apk/aligned.apk
+
+          # 4. Проверка/создание постоянного ключа pos-bridge.jks
+          if [ ! -f pos-bridge.jks ]; then
+            keytool -genkeypair -v -keystore pos-bridge.jks -storetype PKCS12 \
+              -keyalg RSA -keysize 2048 -validity 10000 -alias posbridge \
+              -storepass rikoriko -keypass rikoriko \
+              -dname "CN=POSBridge, OU=Dev, O=RikoSoft, L=Valencia, S=Valencia, C=ES"
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git add pos-bridge.jks
+            git commit -m "Save persistent keystore" || true
+            git push || true
+          fi
+
+          # 5. Подпись APK
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks pos-bridge.jks \
+            --ks-key-alias posbridge \
+            --ks-pass pass:rikoriko \
+            --key-pass pass:rikoriko \
+            --out tcp-bridge.apk \
+            build/apk/aligned.apk
+
+          ls -lh tcp-bridge.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tcp-bridge
+          path: tcp-bridge.apk
