@@ -68,13 +68,13 @@ public class BridgeApp extends Activity {
         root.addView(title);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Локальный прокси-сервер для Web-ПРРО и оборудования");
+        subtitle.setText("Локальний проксі-сервер для Web-ПРРО та обладнання");
         subtitle.setTextColor(Color.parseColor("#94A3B8"));
         subtitle.setTextSize(13);
         subtitle.setPadding(0, 6, 0, 28);
         root.addView(subtitle);
 
-        // Карточка статуса
+        // Картка статусу
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(32, 28, 32, 28);
@@ -85,14 +85,14 @@ public class BridgeApp extends Activity {
         card.setBackground(cardBg);
 
         TextView statusLine = new TextView(this);
-        statusLine.setText("●  АКТИВЕН  |  http://127.0.0.1:8088");
+        statusLine.setText("●  АКТИВНИЙ  |  http://127.0.0.1:8088");
         statusLine.setTextColor(Color.parseColor("#4ADE80"));
         statusLine.setTextSize(15);
         statusLine.setTypeface(Typeface.DEFAULT_BOLD);
         card.addView(statusLine);
 
         TextView endpoints = new TextView(this);
-        endpoints.setText("GET  /ping  — проверка связи\nPOST /tcp   — отправка в TCP-сокет (JSON / Base64)");
+        endpoints.setText("GET  /ping  — перевірка зв'язку\nPOST /tcp   — відправка у TCP-сокет (JSON / Base64)");
         endpoints.setTextColor(Color.parseColor("#CBD5E1"));
         endpoints.setTextSize(12);
         endpoints.setTypeface(Typeface.MONOSPACE);
@@ -114,7 +114,7 @@ public class BridgeApp extends Activity {
         lp1.rightMargin = 12;
         btnRow.addView(restartBtn, lp1);
 
-        Button clearBtn = createStyledButton("Очистить лог", "#334155");
+        Button clearBtn = createStyledButton("Очистити лог", "#334155");
         clearBtn.setOnClickListener(v -> BridgeService.clearLogs());
         LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         lp2.leftMargin = 12;
@@ -122,24 +122,24 @@ public class BridgeApp extends Activity {
 
         root.addView(btnRow);
 
-        // Кнопка отключения оптимизации батареи
-        batteryBtn = createStyledButton("Отключить спящий режим для моста", "#D97706");
+        // Кнопка вимкнення оптимізації батареї
+        batteryBtn = createStyledButton("Вимкнути сплячий режим для мосту", "#D97706");
         batteryBtn.setOnClickListener(v -> requestBatteryExemption());
         LinearLayout.LayoutParams lpBat = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         lpBat.bottomMargin = 20;
         root.addView(batteryBtn, lpBat);
 
-        // Заголовок лога
+        // Заголовок логу
         TextView logHeader = new TextView(this);
-        logHeader.setText("ЖУРНАЛ СОБЫТИЙ:");
+        logHeader.setText("ЖУРНАЛ ПОДІЙ:");
         logHeader.setTextColor(Color.parseColor("#64748B"));
         logHeader.setTextSize(11);
         logHeader.setTypeface(Typeface.DEFAULT_BOLD);
         logHeader.setPadding(0, 4, 0, 8);
         root.addView(logHeader);
 
-        // Окно лога
+        // Вікно логу
         scrollView = new ScrollView(this);
         GradientDrawable logBg = new GradientDrawable();
         logBg.setColor(Color.parseColor("#090D16"));
@@ -203,7 +203,7 @@ public class BridgeApp extends Activity {
             i.setData(Uri.parse("package:" + getPackageName()));
             startActivity(i);
         } catch (Exception e) {
-            BridgeService.log("Не удалось открыть настройки батареи: " + e.getMessage());
+            BridgeService.log("Не вдалося відкрити налаштування батареї: " + e.getMessage());
         }
     }
 
@@ -229,7 +229,7 @@ class BridgeService extends Service {
 
     public static void clearLogs() {
         synchronized (logs) { logs.setLength(0); }
-        log("Журнал очищен.");
+        log("Журнал очищено.");
     }
 
     public static void log(String msg) {
@@ -302,7 +302,7 @@ class BridgeService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel ch = new NotificationChannel(
                 chId, "POS TCP Bridge", NotificationManager.IMPORTANCE_LOW);
-            ch.setDescription("Фоновая работа локального TCP-моста");
+            ch.setDescription("Фонова робота локального TCP-мосту");
             getSystemService(NotificationManager.class).createNotificationChannel(ch);
 
             Intent openIntent = new Intent(this, BridgeApp.class);
@@ -310,8 +310,8 @@ class BridgeService extends Service {
             PendingIntent pi = PendingIntent.getActivity(this, 0, openIntent, flags);
 
             Notification n = new Notification.Builder(this, chId)
-                .setContentTitle("POS TCP Bridge работает")
-                .setContentText("Прокси 127.0.0.1:8088 -> TCP активен")
+                .setContentTitle("POS TCP Bridge працює")
+                .setContentText("Проксі 127.0.0.1:8088 -> TCP активний")
                 .setSmallIcon(android.R.drawable.stat_sys_upload_done)
                 .setContentIntent(pi)
                 .setOngoing(true)
@@ -329,13 +329,13 @@ class BridgeService extends Service {
                 serverSocket = new ServerSocket();
                 serverSocket.setReuseAddress(true);
                 serverSocket.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 8088), 50);
-                log("Сервер запущен на 127.0.0.1:8088");
+                log("Сервер запущено на 127.0.0.1:8088");
                 while (running) {
                     Socket client = serverSocket.accept();
                     new Thread(() -> handleHttpClient(client)).start();
                 }
             } catch (Exception e) {
-                if (running) log("Остановка сокета: " + e.getMessage());
+                if (running) log("Зупинка сокета: " + e.getMessage());
                 running = false;
             }
         }).start();
@@ -434,11 +434,11 @@ class BridgeService extends Service {
                         while ((n = tcpIn.read(buf)) != -1) {
                             respBuf.write(buf, 0, n);
                             byte[] cur = respBuf.toByteArray();
-                            // Терминалы ПриватБанка завершают JSON-ответ нулевым байтом \0
+                            // Термінали ПриватБанку завершують JSON-відповідь нульовим байтом \0
                             if (cur.length > 0 && cur[cur.length - 1] == 0) {
                                 break;
                             }
-                            // Для устройств без \0 даем короткую паузу на склейку TCP-фрагментов
+                            // Для пристроїв без \0 даємо коротку паузу на склеювання TCP-фрагментів
                             tcp.setSoTimeout(350);
                         }
                     } catch (SocketTimeoutException ste) {
@@ -447,13 +447,13 @@ class BridgeService extends Service {
 
                     byte[] rawResp = respBuf.toByteArray();
                     respB64 = Base64.encodeToString(rawResp, Base64.NO_WRAP);
-                    // Убираем завершающий \0 из текстового поля для чистого JSON
+                    // Прибираємо завершальний \0 з текстового поля для чистого JSON
                     int textLen = (rawResp.length > 0 && rawResp[rawResp.length - 1] == 0)
                         ? rawResp.length - 1 : rawResp.length;
                     respText = new String(rawResp, 0, textLen, StandardCharsets.UTF_8);
-                    log("<- TCP ответ: " + rawResp.length + " B");
+                    log("<- TCP відповідь: " + rawResp.length + " B");
                 } else {
-                    log("<- Отправлено без ожидания ответа");
+                    log("<- Відправлено без очікування відповіді");
                 }
 
                 JSONObject res = new JSONObject();
@@ -463,7 +463,7 @@ class BridgeService extends Service {
                 sendHttp(out, 200, res.toString());
             }
         } catch (Exception e) {
-            log("Ошибка: " + e.getMessage());
+            log("Помилка: " + e.getMessage());
             try {
                 JSONObject err = new JSONObject();
                 err.put("ok", false);
