@@ -25,14 +25,14 @@ jobs:
             --java build/gen
 
           # 2. Компиляция Java -> .class -> classes.dex
-          javac -encoding UTF-8 -source 1.8 -target 1.8 \
-            -bootclasspath "$ANDROID_JAR" \
+          javac -encoding UTF-8 --release 11 \
             -classpath "$ANDROID_JAR" \
             -d build/obj \
             src/com/rikosoft/posbridge/BridgeApp.java
 
           "$BUILD_TOOLS/d8" build/obj/com/rikosoft/posbridge/*.class \
             --lib "$ANDROID_JAR" \
+            --min-api 24 \
             --output build/apk/
 
           # 3. Добавление classes.dex в APK и выравнивание
