@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.pos_local_bridge"
-    android:versionCode="4"
-    android:versionName="2.0.1">
+    android:versionCode="5"
+    android:versionName="2.0.2">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
 
@@ -31,12 +31,12 @@
         </activity>
 
         <service
-            android:name="com.rikosoft.posbridge.BridgeService"
+            android:name="com.rikosoft.posbridge.BridgeApp$BridgeService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
         <receiver
-            android:name="com.rikosoft.posbridge.BootReceiver"
+            android:name="com.rikosoft.posbridge.BridgeApp$BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
