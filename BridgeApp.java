@@ -9,9 +9,11 @@ import android.app.Service;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -27,16 +29,19 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -45,17 +50,15 @@ import java.util.Locale;
 import java.util.Set;
 
 public class BridgeApp extends Activity {
-    public static TextView logView;
-    public static ScrollView scrollView;
+    private static final String APP_VERSION = "2.0.3";
+    public static volatile TextView logView;
+    public static volatile TextView statusView;
+    public static volatile ScrollView scrollView;
     private Button batteryBtn;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
-        if (Build.VERSION.SDK_INT >= 33) {
-            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 101);
-        }
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -64,7 +67,7 @@ public class BridgeApp extends Activity {
 
         // Заголовок
         TextView title = new TextView(this);
-        title.setText("POS TCP Bridge");
+        title.setText("POS TCP Bridge v" + APP_VERSION);
         title.setTextColor(Color.parseColor("#F8FAFC"));
         title.setTextSize(22);
         title.setTypeface(Typeface.DEFAULT_BOLD);
@@ -87,12 +90,12 @@ public class BridgeApp extends Activity {
         cardBg.setStroke(2, Color.parseColor("#334155"));
         card.setBackground(cardBg);
 
-        TextView statusLine = new TextView(this);
-        statusLine.setText("●  АКТИВНИЙ  |  http://127.0.0.1:8088");
-        statusLine.setTextColor(Color.parseColor("#4ADE80"));
-        statusLine.setTextSize(15);
-        statusLine.setTypeface(Typeface.DEFAULT_BOLD);
-        card.addView(statusLine);
+        statusView = new TextView(this);
+        statusView.setText("●  ЗАПУСК...  |  http://127.0.0.1:8088");
+        statusView.setTextColor(Color.parseColor("#FBBF24"));
+        statusView.setTextSize(15);
+        statusView.setTypeface(Typeface.DEFAULT_BOLD);
+        card.addView(statusView);
 
         TextView endpoints = new TextView(this);
         endpoints.setText("GET  /ping  — перевірка зв'язку\nPOST /tcp   — відправка у TCP-сокет (JSON / Base64)");
@@ -109,24 +112,32 @@ public class BridgeApp extends Activity {
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
         btnRow.setPadding(0, 24, 0, 16);
 
-        Button restartBtn = createStyledButton("Перезапуск", "#2563EB");
+        Button restartBtn = createStyledButton("Перезапуск", "#2563EB", "#1D4ED8");
         restartBtn.setOnClickListener(v -> {
+            BridgeService.log("Натиснуто: Перезапуск");
             BridgeService.restartServer(this);
         });
         LinearLayout.LayoutParams lp1 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        lp1.rightMargin = 12;
+        lp1.rightMargin = 8;
         btnRow.addView(restartBtn, lp1);
 
-        Button clearBtn = createStyledButton("Очистити лог", "#334155");
-        clearBtn.setOnClickListener(v -> BridgeService.clearLogs());
+        Button testBtn = createStyledButton("Тест :8088", "#059669", "#047857");
+        testBtn.setOnClickListener(v -> runSelfPingTest());
         LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        lp2.leftMargin = 12;
-        btnRow.addView(clearBtn, lp2);
+        lp2.leftMargin = 8;
+        lp2.rightMargin = 8;
+        btnRow.addView(testBtn, lp2);
+
+        Button clearBtn = createStyledButton("Очистити", "#334155", "#1E293B");
+        clearBtn.setOnClickListener(v -> BridgeService.clearLogs());
+        LinearLayout.LayoutParams lp3 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        lp3.leftMargin = 8;
+        btnRow.addView(clearBtn, lp3);
 
         root.addView(btnRow);
 
         // Кнопка вимкнення оптимізації батареї
-        batteryBtn = createStyledButton("Вимкнути сплячий режим для мосту", "#D97706");
+        batteryBtn = createStyledButton("Вимкнути сплячий режим для мосту", "#D97706", "#B45309");
         batteryBtn.setOnClickListener(v -> requestBatteryExemption());
         LinearLayout.LayoutParams lpBat = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -144,6 +155,7 @@ public class BridgeApp extends Activity {
 
         // Вікно логу
         scrollView = new ScrollView(this);
+        scrollView.setFillViewport(true);
         GradientDrawable logBg = new GradientDrawable();
         logBg.setColor(Color.parseColor("#090D16"));
         logBg.setCornerRadius(16f);
@@ -159,34 +171,113 @@ public class BridgeApp extends Activity {
         logView.setTextColor(Color.parseColor("#38BDF8"));
         logView.setTextSize(11);
         logView.setTypeface(Typeface.MONOSPACE);
-        logView.setText(BridgeService.getLogs());
-        scrollView.addView(logView);
+        scrollView.addView(logView, new ScrollView.LayoutParams(
+            ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
 
         root.addView(scrollView);
         setContentView(root);
 
+        BridgeService.log("Інтерфейс запущено (v" + APP_VERSION + ", API " + Build.VERSION.SDK_INT + ")");
         startBridgeService();
         updateBatteryButton();
+        refreshUi();
+
+        if (Build.VERSION.SDK_INT >= 33) {
+            try {
+                requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 101);
+            } catch (Throwable t) {
+                BridgeService.log("POST_NOTIFICATIONS запит: " + t.getMessage());
+            }
+        }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         updateBatteryButton();
-        if (logView != null) logView.setText(BridgeService.getLogs());
+        if (!BridgeService.isListening()) {
+            startBridgeService();
+        }
+        refreshUi();
     }
 
-    private Button createStyledButton(String text, String hexColor) {
+    public static void refreshUi() {
+        new Handler(Looper.getMainLooper()).post(() -> {
+            if (statusView != null) {
+                if (BridgeService.isListening()) {
+                    statusView.setText("●  АКТИВНИЙ  |  http://127.0.0.1:8088");
+                    statusView.setTextColor(Color.parseColor("#4ADE80"));
+                } else {
+                    String err = BridgeService.lastError;
+                    String suffix = (err != null && !err.isEmpty()) ? (" (" + err + ")") : "";
+                    statusView.setText("●  НЕ АКТИВНИЙ  |  127.0.0.1:8088" + suffix);
+                    statusView.setTextColor(Color.parseColor("#F87171"));
+                }
+            }
+            if (logView != null) {
+                logView.setText(BridgeService.getLogs());
+                if (scrollView != null) {
+                    scrollView.post(() -> {
+                        if (scrollView != null) scrollView.fullScroll(View.FOCUS_DOWN);
+                    });
+                }
+            }
+        });
+    }
+
+    private void runSelfPingTest() {
+        BridgeService.log("Самодіагностика: GET http://127.0.0.1:8088/ping ...");
+        new Thread(() -> {
+            HttpURLConnection conn = null;
+            try {
+                URL url = new URL("http://127.0.0.1:8088/ping");
+                conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("GET");
+                conn.setConnectTimeout(3000);
+                conn.setReadTimeout(3000);
+                int code = conn.getResponseCode();
+                InputStream is = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
+                StringBuilder sb = new StringBuilder();
+                if (is != null) {
+                    byte[] buf = new byte[512];
+                    int n;
+                    while ((n = is.read(buf)) != -1) {
+                        sb.append(new String(buf, 0, n, StandardCharsets.UTF_8));
+                    }
+                    is.close();
+                }
+                BridgeService.log("Самодіагностика OK (" + code + "): " + sb.toString());
+                runOnUiThread(() -> Toast.makeText(this, "OK (" + code + "): 127.0.0.1:8088 працює!", Toast.LENGTH_SHORT).show());
+            } catch (Throwable t) {
+                BridgeService.log("Самодіагностика ПОМИЛКА: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+                runOnUiThread(() -> Toast.makeText(this, "Помилка :8088: " + t.getMessage(), Toast.LENGTH_LONG).show());
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+        }).start();
+    }
+
+    private Button createStyledButton(String text, String hexColor, String pressedColor) {
         Button b = new Button(this);
         b.setText(text);
         b.setTextColor(Color.WHITE);
         b.setTextSize(12);
         b.setAllCaps(false);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.parseColor(hexColor));
-        bg.setCornerRadius(14f);
-        b.setBackground(bg);
-        b.setPadding(20, 22, 20, 22);
+
+        GradientDrawable normalBg = new GradientDrawable();
+        normalBg.setColor(Color.parseColor(hexColor));
+        normalBg.setCornerRadius(14f);
+
+        GradientDrawable pressedBg = new GradientDrawable();
+        pressedBg.setColor(Color.parseColor(pressedColor));
+        pressedBg.setCornerRadius(14f);
+
+        StateListDrawable states = new StateListDrawable();
+        states.addState(new int[]{android.R.attr.state_pressed}, pressedBg);
+        states.addState(new int[]{}, normalBg);
+
+        b.setBackground(states);
+        b.setPadding(16, 22, 16, 22);
         return b;
     }
 
@@ -211,20 +302,32 @@ public class BridgeApp extends Activity {
     }
 
     private void startBridgeService() {
-        Intent s = new Intent(this, BridgeService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(s);
-        } else {
-            startService(s);
+        BridgeService.ensureServerRunning();
+        try {
+            Intent s = new Intent(this, BridgeService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(s);
+            } else {
+                startService(s);
+            }
+        } catch (Throwable t) {
+            BridgeService.log("Попередження startForegroundService: " + t.getClass().getSimpleName() + ": " + t.getMessage());
         }
     }
-}
 
-class BridgeService extends Service {
+    public static class BridgeService extends Service {
+    private static final Object SERVER_LOCK = new Object();
     private static ServerSocket serverSocket;
+    private static Thread serverThread;
+    private static volatile long serverGeneration = 0;
     private static volatile boolean running = false;
+    public static volatile String lastError = null;
     private static PowerManager.WakeLock wakeLock;
     private static final StringBuilder logs = new StringBuilder();
+
+    public static boolean isListening() {
+        return running && serverSocket != null && !serverSocket.isClosed() && serverSocket.isBound();
+    }
 
     public static String getLogs() {
         synchronized (logs) { return logs.toString(); }
@@ -232,7 +335,7 @@ class BridgeService extends Service {
 
     public static void clearLogs() {
         synchronized (logs) { logs.setLength(0); }
-        log("Журнал очищено.");
+        log("Журнал очищено. Статус :8088 = " + (isListening() ? "АКТИВНИЙ" : "НЕ АКТИВНИЙ"));
     }
 
     public static void log(String msg) {
@@ -242,46 +345,61 @@ class BridgeService extends Service {
             if (logs.length() > 12000) logs.delete(0, 6000);
             logs.append(line);
         }
-        if (BridgeApp.logView != null) {
-            new Handler(Looper.getMainLooper()).post(() -> {
-                if (BridgeApp.logView != null) {
-                    BridgeApp.logView.setText(getLogs());
-                    if (BridgeApp.scrollView != null) {
-                        BridgeApp.scrollView.fullScroll(View.FOCUS_DOWN);
-                    }
-                }
-            });
+        refreshUi();
+    }
+
+    public static void ensureServerRunning() {
+        synchronized (SERVER_LOCK) {
+            if (isListening() && serverThread != null && serverThread.isAlive()) {
+                return;
+            }
+            startServerLocked();
         }
     }
 
     public static void restartServer(Context ctx) {
-        running = false;
+        synchronized (SERVER_LOCK) {
+            running = false;
+            serverGeneration++;
+            try {
+                if (serverSocket != null) serverSocket.close();
+            } catch (Exception ignored) {}
+            serverSocket = null;
+            startServerLocked();
+        }
         try {
-            if (serverSocket != null) serverSocket.close();
-        } catch (Exception ignored) {}
-        Intent s = new Intent(ctx, BridgeService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            ctx.startForegroundService(s);
-        } else {
-            ctx.startService(s);
+            Intent s = new Intent(ctx, BridgeService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ctx.startForegroundService(s);
+            } else {
+                ctx.startService(s);
+            }
+        } catch (Throwable t) {
+            log("Попередження перезапуску сервісу: " + t.getMessage());
         }
     }
 
     @Override
     public void onCreate() {
         super.onCreate();
-        acquireWakeLock();
-        startForegroundNotification();
-        startHttpServer();
+        try {
+            acquireWakeLock();
+            startForegroundNotification();
+        } catch (Throwable t) {
+            log("Помилка Foreground-сервісу (onCreate): " + t.getClass().getSimpleName() + ": " + t.getMessage());
+        }
+        ensureServerRunning();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        acquireWakeLock();
-        startForegroundNotification();
-        if (!running || serverSocket == null || serverSocket.isClosed()) {
-            startHttpServer();
+        try {
+            acquireWakeLock();
+            startForegroundNotification();
+        } catch (Throwable t) {
+            log("Помилка Foreground-сервісу (onStartCommand): " + t.getClass().getSimpleName() + ": " + t.getMessage());
         }
+        ensureServerRunning();
         return START_STICKY;
     }
 
@@ -306,7 +424,10 @@ class BridgeService extends Service {
             NotificationChannel ch = new NotificationChannel(
                 chId, "POS TCP Bridge", NotificationManager.IMPORTANCE_LOW);
             ch.setDescription("Фонова робота локального TCP-мосту");
-            getSystemService(NotificationManager.class).createNotificationChannel(ch);
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm != null) {
+                nm.createNotificationChannel(ch);
+            }
 
             Intent openIntent = new Intent(this, BridgeApp.class);
             int flags = Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_IMMUTABLE : 0;
@@ -319,32 +440,66 @@ class BridgeService extends Service {
                 .setContentIntent(pi)
                 .setOngoing(true)
                 .build();
-            startForeground(1, n);
+            if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            } else {
+                startForeground(1, n);
+            }
         }
     }
 
-    private synchronized void startHttpServer() {
-        if (running && serverSocket != null && !serverSocket.isClosed()) return;
+    private static void startServerLocked() {
+        final long myGen = ++serverGeneration;
         running = true;
-        new Thread(() -> {
+        lastError = null;
+        refreshUi();
+        serverThread = new Thread(() -> {
+            ServerSocket sock = null;
             try {
-                if (serverSocket != null && !serverSocket.isClosed()) serverSocket.close();
-                serverSocket = new ServerSocket();
-                serverSocket.setReuseAddress(true);
-                serverSocket.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 8088), 50);
+                sock = new ServerSocket();
+                sock.setReuseAddress(true);
+                sock.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 8088), 50);
+                synchronized (SERVER_LOCK) {
+                    if (myGen != serverGeneration || !running) {
+                        try { sock.close(); } catch (Exception ignored) {}
+                        return;
+                    }
+                    serverSocket = sock;
+                }
+                lastError = null;
                 log("Сервер запущено на 127.0.0.1:8088");
-                while (running) {
-                    Socket client = serverSocket.accept();
+                while (running && myGen == serverGeneration) {
+                    Socket client = sock.accept();
                     new Thread(() -> handleHttpClient(client)).start();
                 }
-            } catch (Exception e) {
-                if (running) log("Зупинка сокета: " + e.getMessage());
-                running = false;
+            } catch (Throwable e) {
+                if (myGen == serverGeneration) {
+                    if (running) {
+                        lastError = e.getMessage();
+                        log("Помилка сокета: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                    } else {
+                        log("Сервер зупинено");
+                    }
+                    running = false;
+                    refreshUi();
+                }
+            } finally {
+                try {
+                    if (sock != null && !sock.isClosed()) sock.close();
+                } catch (Exception ignored) {}
+                synchronized (SERVER_LOCK) {
+                    if (myGen == serverGeneration && serverSocket == sock) {
+                        serverSocket = null;
+                        running = false;
+                        refreshUi();
+                    }
+                }
             }
-        }).start();
+        }, "PosBridgeHttp-" + myGen);
+        serverThread.start();
     }
 
-    private void handleHttpClient(Socket client) {
+    private static void handleHttpClient(Socket client) {
         try (Socket c = client) {
             c.setSoTimeout(15000);
             InputStream in = c.getInputStream();
@@ -368,14 +523,20 @@ class BridgeService extends Service {
             String[] parts = firstLine.split(" ");
             String method = parts.length > 0 ? parts[0].toUpperCase(Locale.US) : "";
             String path = parts.length > 1 ? parts[1] : "/";
+            int qPos = path.indexOf('?');
+            if (qPos >= 0) {
+                path = path.substring(0, qPos);
+            }
 
             if ("OPTIONS".equals(method)) {
+                log("<- HTTP OPTIONS " + path);
                 sendHttp(out, 204, "");
                 return;
             }
 
             if ("/ping".equals(path) || ("GET".equals(method) && "/".equals(path))) {
-                sendHttp(out, 200, "{\"ok\":true,\"status\":\"ok\",\"version\":\"2.0.0\"}");
+                log("<- HTTP " + method + " " + path);
+                sendHttp(out, 200, "{\"ok\":true,\"status\":\"ok\",\"version\":\"" + APP_VERSION + "\"}");
                 return;
             }
 
@@ -571,7 +732,7 @@ class BridgeService extends Service {
         }
     }
 
-    private boolean tryConsumeIgnoredFrame(String frameTrim, Set<String> ignoreMethods, JSONArray serviceMessages) {
+    private static boolean tryConsumeIgnoredFrame(String frameTrim, Set<String> ignoreMethods, JSONArray serviceMessages) {
         if (ignoreMethods == null || ignoreMethods.isEmpty() || frameTrim.isEmpty() || frameTrim.charAt(0) != '{') {
             return false;
         }
@@ -586,19 +747,22 @@ class BridgeService extends Service {
         return false;
     }
 
-    private void sendHttp(OutputStream out, int code, String body) throws Exception {
+    private static void sendHttp(OutputStream out, int code, String body) throws Exception {
         byte[] b = body.getBytes(StandardCharsets.UTF_8);
         String status = code == 200 ? "200 OK" : (code == 204 ? "204 No Content" : "500 Internal Server Error");
-        String hdr = "HTTP/1.1 " + status + "\r\n" +
-            "Content-Type: application/json; charset=utf-8\r\n" +
-            "Access-Control-Allow-Origin: *\r\n" +
-            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n" +
-            "Access-Control-Allow-Headers: *\r\n" +
-            "Access-Control-Allow-Private-Network: true\r\n" +
-            "Access-Control-Max-Age: 86400\r\n" +
-            "Content-Length: " + b.length + "\r\n" +
-            "Connection: close\r\n\r\n";
-        out.write(hdr.getBytes(StandardCharsets.UTF_8));
+        StringBuilder hdr = new StringBuilder();
+        hdr.append("HTTP/1.1 ").append(status).append("\r\n")
+            .append("Access-Control-Allow-Origin: *\r\n")
+            .append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
+            .append("Access-Control-Allow-Headers: *\r\n")
+            .append("Access-Control-Allow-Private-Network: true\r\n")
+            .append("Access-Control-Max-Age: 86400\r\n");
+        if (code != 204) {
+            hdr.append("Content-Type: application/json; charset=utf-8\r\n")
+                .append("Content-Length: ").append(b.length).append("\r\n");
+        }
+        hdr.append("Connection: close\r\n\r\n");
+        out.write(hdr.toString().getBytes(StandardCharsets.UTF_8));
         if (b.length > 0) out.write(b);
         out.flush();
     }
@@ -607,14 +771,17 @@ class BridgeService extends Service {
     public IBinder onBind(Intent intent) { return null; }
 }
 
-class BootReceiver extends BroadcastReceiver {
-    @Override
-    public void onReceive(Context context, Intent intent) {
-        Intent s = new Intent(context, BridgeService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(s);
-        } else {
-            context.startService(s);
+    public static class BootReceiver extends BroadcastReceiver {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            try {
+                Intent s = new Intent(context, BridgeService.class);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(s);
+                } else {
+                    context.startService(s);
+                }
+            } catch (Exception ignored) {}
         }
     }
 }
