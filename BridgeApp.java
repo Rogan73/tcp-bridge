@@ -27,6 +27,7 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -39,7 +40,9 @@ import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.Set;
 
 public class BridgeApp extends Activity {
     public static TextView logView;
@@ -400,10 +403,26 @@ class BridgeService extends Service {
             int readTimeout = req.optInt("timeout", 65000);
             boolean waitResponse = req.optBoolean("waitResponse", true);
             boolean ensureNull = req.optBoolean("ensureNullTerminator", false);
+            boolean waitFinalResponse = req.optBoolean("waitFinalResponse", false);
+            Set<String> ignoreMethods = new HashSet<>();
+            if (req.has("ignoreMethods") && !req.isNull("ignoreMethods")) {
+                JSONArray arr = req.optJSONArray("ignoreMethods");
+                if (arr != null) {
+                    for (int i = 0; i < arr.length(); i++) {
+                        String m = arr.optString(i, "").trim();
+                        if (!m.isEmpty()) {
+                            ignoreMethods.add(m.toLowerCase(Locale.US));
+                        }
+                    }
+                }
+            } else if (waitFinalResponse) {
+                ignoreMethods.add("servicemessage");
+            }
 
             byte[] payload;
-            if (req.has("dataBase64") && !req.getString("dataBase64").isEmpty()) {
-                payload = Base64.decode(req.getString("dataBase64"), Base64.DEFAULT);
+            String dataB64 = req.optString("dataBase64", "");
+            if (!req.isNull("dataBase64") && !dataB64.isEmpty()) {
+                payload = Base64.decode(dataB64, Base64.DEFAULT);
             } else {
                 String data = req.optString("data", "");
                 if (ensureNull && !data.endsWith("\0")) {
@@ -424,34 +443,112 @@ class BridgeService extends Service {
 
                 String respText = "";
                 String respB64 = "";
+                JSONArray serviceMessages = new JSONArray();
 
                 if (waitResponse) {
                     InputStream tcpIn = tcp.getInputStream();
-                    ByteArrayOutputStream respBuf = new ByteArrayOutputStream();
                     byte[] buf = new byte[4096];
-                    try {
-                        int n;
-                        while ((n = tcpIn.read(buf)) != -1) {
-                            respBuf.write(buf, 0, n);
-                            byte[] cur = respBuf.toByteArray();
-                            // Термінали ПриватБанку завершують JSON-відповідь нульовим байтом \0
-                            if (cur.length > 0 && cur[cur.length - 1] == 0) {
+
+                    if (waitFinalResponse) {
+                        ByteArrayOutputStream frameBuf = new ByteArrayOutputStream();
+                        long deadlineMs = System.currentTimeMillis() + Math.max(1, readTimeout);
+                        byte[] finalFrameBytes = null;
+                        boolean finalHadNull = false;
+
+                        while (finalFrameBytes == null) {
+                            long remainingMs = deadlineMs - System.currentTimeMillis();
+                            if (remainingMs <= 0) {
+                                throw new SocketTimeoutException("Timeout waiting for final TCP response (" + readTimeout + " ms)");
+                            }
+                            tcp.setSoTimeout((int) Math.min(Integer.MAX_VALUE, remainingMs));
+
+                            int n = tcpIn.read(buf);
+                            if (n == -1) {
+                                if (frameBuf.size() > 0) {
+                                    byte[] tail = frameBuf.toByteArray();
+                                    String tailTrim = new String(tail, StandardCharsets.UTF_8).trim();
+                                    if (!tailTrim.isEmpty() && !tryConsumeIgnoredFrame(tailTrim, ignoreMethods, serviceMessages)) {
+                                        finalFrameBytes = tail;
+                                    }
+                                }
                                 break;
                             }
-                            // Для пристроїв без \0 даємо коротку паузу на склеювання TCP-фрагментів
-                            tcp.setSoTimeout(350);
-                        }
-                    } catch (SocketTimeoutException ste) {
-                        if (respBuf.size() == 0) throw ste;
-                    }
 
-                    byte[] rawResp = respBuf.toByteArray();
-                    respB64 = Base64.encodeToString(rawResp, Base64.NO_WRAP);
-                    // Прибираємо завершальний \0 з текстового поля для чистого JSON
-                    int textLen = (rawResp.length > 0 && rawResp[rawResp.length - 1] == 0)
-                        ? rawResp.length - 1 : rawResp.length;
-                    respText = new String(rawResp, 0, textLen, StandardCharsets.UTF_8);
-                    log("<- TCP відповідь: " + rawResp.length + " B");
+                            int start = 0;
+                            for (int i = 0; i < n; i++) {
+                                if (buf[i] == 0) {
+                                    if (i > start) {
+                                        frameBuf.write(buf, start, i - start);
+                                    }
+                                    byte[] frameBytes = frameBuf.toByteArray();
+                                    frameBuf.reset();
+                                    start = i + 1;
+
+                                    if (frameBytes.length == 0) {
+                                        continue;
+                                    }
+                                    String frameTrim = new String(frameBytes, StandardCharsets.UTF_8).trim();
+                                    if (frameTrim.isEmpty()) {
+                                        continue;
+                                    }
+                                    if (tryConsumeIgnoredFrame(frameTrim, ignoreMethods, serviceMessages)) {
+                                        log("<- TCP ServiceMessage (" + frameBytes.length + " B)");
+                                        continue;
+                                    }
+                                    finalFrameBytes = frameBytes;
+                                    finalHadNull = true;
+                                    break;
+                                }
+                            }
+                            if (finalFrameBytes == null && start < n) {
+                                frameBuf.write(buf, start, n - start);
+                            }
+                        }
+
+                        if (finalFrameBytes == null) {
+                            if (serviceMessages.length() > 0) {
+                                throw new SocketTimeoutException("TCP socket closed before final response");
+                            }
+                            finalFrameBytes = new byte[0];
+                        }
+
+                        respText = new String(finalFrameBytes, StandardCharsets.UTF_8);
+                        if (finalHadNull) {
+                            byte[] rawWithNull = new byte[finalFrameBytes.length + 1];
+                            System.arraycopy(finalFrameBytes, 0, rawWithNull, 0, finalFrameBytes.length);
+                            rawWithNull[finalFrameBytes.length] = 0;
+                            respB64 = Base64.encodeToString(rawWithNull, Base64.NO_WRAP);
+                            log("<- TCP фінальна відповідь: " + rawWithNull.length + " B (ServiceMessages: " + serviceMessages.length() + ")");
+                        } else {
+                            respB64 = Base64.encodeToString(finalFrameBytes, Base64.NO_WRAP);
+                            log("<- TCP фінальна відповідь: " + finalFrameBytes.length + " B (ServiceMessages: " + serviceMessages.length() + ")");
+                        }
+                    } else {
+                        ByteArrayOutputStream respBuf = new ByteArrayOutputStream();
+                        try {
+                            int n;
+                            while ((n = tcpIn.read(buf)) != -1) {
+                                respBuf.write(buf, 0, n);
+                                byte[] cur = respBuf.toByteArray();
+                                // Термінали ПриватБанку завершують JSON-відповідь нульовим байтом \0
+                                if (cur.length > 0 && cur[cur.length - 1] == 0) {
+                                    break;
+                                }
+                                // Для пристроїв без \0 даємо коротку паузу на склеювання TCP-фрагментів
+                                tcp.setSoTimeout(350);
+                            }
+                        } catch (SocketTimeoutException ste) {
+                            if (respBuf.size() == 0) throw ste;
+                        }
+
+                        byte[] rawResp = respBuf.toByteArray();
+                        respB64 = Base64.encodeToString(rawResp, Base64.NO_WRAP);
+                        // Прибираємо завершальний \0 з текстового поля для чистого JSON
+                        int textLen = (rawResp.length > 0 && rawResp[rawResp.length - 1] == 0)
+                            ? rawResp.length - 1 : rawResp.length;
+                        respText = new String(rawResp, 0, textLen, StandardCharsets.UTF_8);
+                        log("<- TCP відповідь: " + rawResp.length + " B");
+                    }
                 } else {
                     log("<- Відправлено без очікування відповіді");
                 }
@@ -460,6 +557,7 @@ class BridgeService extends Service {
                 res.put("ok", true);
                 res.put("data", respText);
                 res.put("dataBase64", respB64);
+                res.put("serviceMessages", serviceMessages);
                 sendHttp(out, 200, res.toString());
             }
         } catch (Exception e) {
@@ -471,6 +569,21 @@ class BridgeService extends Service {
                 sendHttp(client.getOutputStream(), 500, err.toString());
             } catch (Exception ignored) {}
         }
+    }
+
+    private boolean tryConsumeIgnoredFrame(String frameTrim, Set<String> ignoreMethods, JSONArray serviceMessages) {
+        if (ignoreMethods == null || ignoreMethods.isEmpty() || frameTrim.isEmpty() || frameTrim.charAt(0) != '{') {
+            return false;
+        }
+        try {
+            JSONObject obj = new JSONObject(frameTrim);
+            String method = obj.optString("method", "").trim();
+            if (!method.isEmpty() && ignoreMethods.contains(method.toLowerCase(Locale.US))) {
+                serviceMessages.put(obj);
+                return true;
+            }
+        } catch (Exception ignored) {}
+        return false;
     }
 
     private void sendHttp(OutputStream out, int code, String body) throws Exception {
