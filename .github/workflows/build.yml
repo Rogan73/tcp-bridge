@@ -15,31 +15,41 @@ jobs:
           PLATFORM=$(ls -d $ANDROID_HOME/platforms/android-* | sort -V | tail -n 1)
           ANDROID_JAR="$PLATFORM/android.jar"
 
-          mkdir -p src/com/rikosoft/posbridge build/gen build/obj build/apk
+          mkdir -p src/com/rikosoft/posbridge res/drawable build/gen build/obj build/apk build/res
           cp BridgeApp.java src/com/rikosoft/posbridge/BridgeApp.java
 
-          # 1. Упаковка AndroidManifest.xml
+          # 1. Компиляция иконки icon.png (если она есть в корне репозитория)
+          RES_ARGS=""
+          if [ -f icon.png ]; then
+            cp icon.png res/drawable/icon.png
+            "$BUILD_TOOLS/aapt2" compile --dir res -o build/res/res.zip
+            RES_ARGS="-R build/res/res.zip"
+          fi
+
+          # 2. Упаковка AndroidManifest.xml и ресурсов
           "$BUILD_TOOLS/aapt2" link -o build/apk/unsigned.apk \
             --manifest AndroidManifest.xml \
             -I "$ANDROID_JAR" \
+            $RES_ARGS \
             --java build/gen
 
-          # 2. Компиляция Java -> .class -> classes.dex
+          # 3. Компиляция Java -> .class -> classes.dex
           javac -encoding UTF-8 --release 11 \
             -classpath "$ANDROID_JAR" \
             -d build/obj \
-            src/com/rikosoft/posbridge/BridgeApp.java
+            src/com/rikosoft/posbridge/BridgeApp.java \
+            $(find build/gen -name "*.java")
 
-          "$BUILD_TOOLS/d8" build/obj/com/rikosoft/posbridge/*.class \
+          "$BUILD_TOOLS/d8" $(find build/obj -name "*.class") \
             --lib "$ANDROID_JAR" \
             --min-api 24 \
             --output build/apk/
 
-          # 3. Добавление classes.dex в APK и выравнивание
+          # 4. Добавление classes.dex в APK и выравнивание
           cd build/apk && zip -q -u unsigned.apk classes.dex && cd ../..
           "$BUILD_TOOLS/zipalign" -f -p 4 build/apk/unsigned.apk build/apk/aligned.apk
 
-          # 4. Проверка/создание постоянного ключа pos-bridge.jks
+          # 5. Проверка/создание постоянного ключа pos-bridge.jks
           if [ ! -f pos-bridge.jks ]; then
             keytool -genkeypair -v -keystore pos-bridge.jks -storetype PKCS12 \
               -keyalg RSA -keysize 2048 -validity 10000 -alias posbridge \
@@ -52,7 +62,7 @@ jobs:
             git push || true
           fi
 
-          # 5. Подпись APK
+          # 6. Подпись APK
           "$BUILD_TOOLS/apksigner" sign \
             --ks pos-bridge.jks \
             --ks-key-alias posbridge \
