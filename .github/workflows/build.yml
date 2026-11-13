@@ -8,7 +8,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compile and Sign Pure Java APK
+      - name: Compile and Sign Pure Java APK with Vector Icon
         run: |
           set -e
           BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -n 1)
@@ -18,19 +18,49 @@ jobs:
           mkdir -p src/com/rikosoft/posbridge res/drawable build/gen build/obj build/apk build/res
           cp BridgeApp.java src/com/rikosoft/posbridge/BridgeApp.java
 
-          # 1. Компиляция иконки icon.png (если она есть в корне репозитория)
-          RES_ARGS=""
-          if [ -f icon.png ]; then
-            cp icon.png res/drawable/icon.png
-            "$BUILD_TOOLS/aapt2" compile --dir res -o build/res/res.zip
-            RES_ARGS="-R build/res/res.zip"
-          fi
+          # 1. Генерируем нативную векторную иконку res/drawable/icon.xml
+          cat << 'EOF' > res/drawable/icon.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:aapt="http://schemas.android.com/aapt"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="512"
+              android:viewportHeight="512">
+              <path android:pathData="M123,8 L389,8 A115,115 0 0,1 504,123 L504,389 A115,115 0 0,1 389,504 L123,504 A115,115 0 0,1 8,389 L8,123 A115,115 0 0,1 123,8 Z">
+                  <aapt:attr name="android:fillColor">
+                      <gradient
+                          android:startX="256"
+                          android:startY="8"
+                          android:endX="256"
+                          android:endY="504"
+                          android:type="linear">
+                          <item android:offset="0.0" android:color="#FF05A8F7" />
+                          <item android:offset="1.0" android:color="#FF0080DE" />
+                      </gradient>
+                  </aapt:attr>
+              </path>
+              <path
+                  android:pathData="M 108 148 A 225 225 0 0 1 404 148 M 150 202 A 160 160 0 0 1 362 202 M 194 256 A 95 95 0 0 1 318 256"
+                  android:strokeColor="#FFFFFF"
+                  android:strokeWidth="34"
+                  android:strokeLineCap="round" />
+              <path
+                  android:fillColor="#FFFFFF"
+                  android:pathData="M 256,283 A 29,29 0 1,1 255.9,283 Z" />
+              <path
+                  android:fillColor="#FFFFFF"
+                  android:pathData="M 140 388 H 210 V 402 H 183 V 474 H 167 V 402 H 140 Z M 287 444 L 303 448 C 299 459 292 466 283 470 C 274 475 264 476 252 475 C 237 475 225 470 218 461 C 211 452 207 441 207 429 C 207 416 211 405 218 397 C 226 389 238 385 253 385 C 266 385 277 388 285 394 C 292 399 298 406 301 415 L 285 419 C 282 411 278 406 272 403 C 267 399 260 398 253 398 C 242 398 234 401 229 407 C 225 413 223 420 223 429 C 223 439 225 447 230 453 C 235 459 243 462 253 462 C 261 462 268 460 274 457 C 280 453 284 449 287 444 Z M 316 474 V 388 H 356 C 367 388 375 390 381 395 C 387 400 390 407 390 416 C 390 425 387 432 381 437 C 375 442 367 445 355 445 H 332 V 474 Z M 332 431 H 355 C 362 431 367 430 370 427 C 373 424 374 421 374 416 C 374 411 373 408 370 405 C 367 402 362 401 355 401 H 332 Z" />
+          </vector>
+          EOF
 
-          # 2. Упаковка AndroidManifest.xml и ресурсов
+          "$BUILD_TOOLS/aapt2" compile --dir res -o build/res/res.zip
+
+          # 2. Упаковка AndroidManifest.xml и ресурсов в APK
           "$BUILD_TOOLS/aapt2" link -o build/apk/unsigned.apk \
             --manifest AndroidManifest.xml \
             -I "$ANDROID_JAR" \
-            $RES_ARGS \
+            -R build/res/res.zip \
             --java build/gen
 
           # 3. Компиляция Java -> .class -> classes.dex
